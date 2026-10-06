@@ -1,13 +1,99 @@
+# ============================================================================
+#  Codemagic 构建配置 —— Android Release APK
+#
+#  ⚠️⚠️ 本文件必须被 Codemagic「显式选用」才会生效 ⚠️⚠️
+#
+#  如果 Codemagic 用的是它 UI 里那套 Flutter 向导配置（Workflow Editor），
+#  这个文件会被**完全忽略**。判断方法很简单：看构建日志里的步骤名 ——
+#  出现下面这些中文步骤名（如「生成 Android 平台工程」）= 本文件生效了；
+#  只有 flutter pub get / flutter build 两条 = 用的还是 UI 配置。
+#
+#  切换方式：Codemagic → 该应用 → Settings → Build configuration，
+#  把配置来源从 UI 改成 "codemagic.yaml"，
+#  然后在 Start new build 时选 android-release 这个 workflow。
+#
+#  ── 为什么必须在 CI 里跑 flutter create ──────────────────────────────
+#  android/ 目录没有入库：它里面有个二进制文件 gradle-wrapper.jar，
+#  没法用源码方式维护，只能由 flutter create 生成。
+#  在任意一台能跑 flutter 的机器上执行一次
+#      flutter create --platforms=android --org <你的org> .
+#  再把这个 android/ 提交进仓库，就可以删掉「生成 Android 平台工程」这一步，
+#  后续构建更快也更可控（正式开发时推荐这么做）。
+# ============================================================================
+
 workflows:
   android-release:
-    name: build android apk
-    max_build_duration: 30
+    name: Android Release APK
+    max_build_duration: 60
+
     environment:
-      flutter: 3.44.9  # 换成你项目兼容的版本
+      flutter: 3.44.9
+      # Flutter 3.44 的 Android Gradle Plugin 要求 JDK 17。
+      # 若日志报 "Unsupported class file major version"，把这里换成 21。
+      java: 17
+
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/.gradle/caches
+        - $HOME/.gradle/wrapper
+
     scripts:
-      - echo "获取依赖..."
-      - flutter pub get
-      - echo "构建apk..."
-      - flutter build apk --release --target=lib/app.dart
+      - name: 生成 Android 平台工程
+        script: |
+          # 只补缺失的平台文件，不会覆盖已有的 lib/ 与 pubspec.yaml。
+          # --org 决定包名：com.example → com.example.meeting_app。
+          # 正式发布前请换成自己的反向域名（如 com.yourcompany）。
+          flutter create --platforms=android --org com.example --project-name meeting_app .
+
+      - name: 确认 flutter create 没有破坏工程
+        script: |
+          # 万一 pubspec.yaml 被覆盖，后面会以「找不到 TRTC 包」这类
+          # 误导性错误收场，很难查。宁可在这里就明确失败。
+          if ! grep -q "tencent_rtc_sdk" pubspec.yaml; then
+            echo "!! pubspec.yaml 被 flutter create 覆盖了，构建终止"; exit 1
+          fi
+          if [ ! -f lib/main.dart ]; then
+            echo "!! lib/main.dart 缺失（构建入口），构建终止"; exit 1
+          fi
+          echo "工程完整性检查通过"
+
+      - name: 打平台配置补丁
+        script: |
+          # 补 Android 的权限、录屏前台服务(foregroundServiceType=mediaProjection)、
+          # 明文 HTTP、minSdk=23、release 混淆规则；
+          # 同时把 App Group 同步进 lib/core/app_config.dart。
+          # 这些东西漏了**不会报错**，只会「装上了但功能不工作」，所以必须走脚本。
+          python3 platform/apply.py --no-create --org com.example
+
+      - name: 获取依赖
+        script: flutter pub get
+
+      - name: 静态分析
+        script: |
+          # 只让 error 中断构建；warning / info 不阻断，避免格式问题挡住出包。
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: 构建 Release APK
+        script: |
+          # 不传 --target：入口就是默认的 lib/main.dart，避免配置漂移。
+          flutter build apk --release
+
     artifacts:
-      - build/&zwnj;**/outputs/**&zwnj;/*.apk
+      # Flutter 3.x 的通用 APK 落在这里
+      - build/app/outputs/flutter-apk/*.apk
+      - build/app/outputs/apk/**/*.apk
+
+# ============================================================================
+#  iOS 暂时没有工作流，这是**故意**的，不是遗漏。
+#
+#  iOS 端屏幕共享要真正跑通，还差两件在 CI 里做不到的事：
+#    1. Broadcast Upload Extension 这个 Target 必须存在于 Runner.xcodeproj 里，
+#       它要在 Xcode 里 File > New > Target 手工创建（或写脚本改 project.pbxproj）。
+#       缺了它，iOS 上点「共享屏幕」是**静默无效**的 —— 不报错、没反应。
+#    2. 代码签名：需要 Apple 开发者账号的证书与 Provisioning Profile，
+#       并在开发者后台给主 App 和扩展两个 App ID 都勾上同一个 App Group。
+#
+#  在 1、2 完成之前加 iOS 工作流，只会得到一个「能装上、但屏幕共享没用」的包，
+#  反而掩盖问题。详细步骤见 platform/README.md 第 6 节。
+# ============================================================================

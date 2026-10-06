@@ -1,0 +1,43 @@
+# ============================================================================
+#  注意：app/ 是一个**独立的 git 仓库**（仓库根就是本目录），
+#        上级目录的 .gitignore 不会作用到这里，所以规则要写在本文件里。
+# ============================================================================
+
+# ---- Dart / Flutter 生成物 ----
+# .dart_tool/ 里是 package_config.json，内容含**本机绝对路径**
+# （如 file:///C:/Users/xxx/AppData/Local/Pub/Cache/...），
+# 提交到仓库只会让 CI 上的问题更难查：pub get 会重新生成，本就不该入库。
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# ---- 若将来把 android/ ios/ 提交进仓库，至少忽略这些构建缓存 ----
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug/
+android/app/profile/
+android/app/release/
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/ephemeral/
+
+# ---- Python（platform/apply.py 的工具产物）----
+__pycache__/
+*.pyc
+
+# ---- IDE / 系统 ----
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# 说明：upload-keystore.jks 目前**已被提交进仓库**。
+#      它本身还没被真正用起来（release 包暂时回退到 debug 签名），
+#      但签名文件入库有泄露风险，建议后续改为用 Codemagic 的
+#      「Code signing identities / 加密环境变量」方式注入，并从仓库移除。
+#      在完成那一步之前，这里刻意**不**忽略 *.jks，以免掩盖现状。
