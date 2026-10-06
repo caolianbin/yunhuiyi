@@ -1,0 +1,13 @@
+workflows:
+  android-release:
+    name: build android apk
+    max_build_duration: 30
+    environment:
+      flutter: 3.44.9  # 换成你项目兼容的版本
+    scripts:
+      - echo "获取依赖..."
+      - flutter pub get
+      - echo "构建apk..."
+      - flutter build apk --release
+    artifacts:
+      - build/&zwnj;**/outputs/**&zwnj;/*.apk
