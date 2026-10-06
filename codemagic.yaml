@@ -8,6 +8,6 @@ workflows:
       - echo "获取依赖..."
       - flutter pub get
       - echo "构建apk..."
-      - flutter build apk --release
+      - flutter build apk --release --target=lib/app.dart
     artifacts:
       - build/&zwnj;**/outputs/**&zwnj;/*.apk
