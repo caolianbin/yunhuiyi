@@ -33,11 +33,42 @@ flutter run
 
 ---
 
+## 用 Codemagic 出包（CI）
+
+仓库根目录的 `codemagic.yaml` 跑 `android-release` 这个 workflow。有两条约束，
+踩中了都会以**看起来完全无关**的错误收场：
+
+**1. `lib/main.dart` 这个文件名不能改。**
+`flutter build` / `flutter run` 在不传 `--target` 时默认就找它。入口若只存在于
+`lib/app.dart`，得到的报错是 `Target file "lib/main.dart" not found` ——
+而 Codemagic 的 Flutter 向导模板、IDE 的运行按钮，找的都是 `lib/main.dart`。
+所以：`main.dart` 只做 bootstrap（绑定 binding → `Session.load()` → `runApp`），
+Widget 树继续留在 `app.dart`。
+
+**2. 必须让 Codemagic 真的去读 `codemagic.yaml`。**
+用 UI 里那套 Workflow Editor 的话，仓库里的 yaml 会被**完全忽略**。
+判断方法很简单：构建日志里出现「生成 Android 平台工程」这类中文步骤名 = yaml 生效；
+只有 `flutter pub get` / `flutter build` 两条 = 还在用 UI 配置。
+切换方式：Settings → Build configuration → 选 `codemagic.yaml`，
+再在 Start new build 时选 `android-release`。
+
+CI 里为什么还要跑 `flutter create`：`android/` 没有入库 —— 它含一个二进制
+`gradle-wrapper.jar`，没法用源码方式维护。在任意一台能跑 flutter 的机器上
+执行一次 `flutter create --platforms=android --org <你的org> .`
+并把 `android/` 提交进仓库，就可以把那一步从 yaml 里删掉，后续构建更快也更可控。
+
+> iOS 目前**故意**没有 CI 工作流。它还缺 Broadcast Upload Extension Target
+> 与代码签名，这两件在 CI 里都做不到；提前加上只会出一个"能装但屏幕共享没用"的包，
+> 反而掩盖真正的问题。步骤见 [platform/README.md](platform/README.md) 第 6 节。
+
+---
+
 ## 代码结构
 
 ```
 lib/
-├── app.dart                    入口：MultiProvider + 登录态路由
+├── main.dart                   构建入口（文件名不可改）：binding → Session.load() → runApp
+├── app.dart                    Widget 树入口：MultiProvider + 登录态路由
 ├── core/
 │   ├── app_config.dart         全局常量（后端地址、Hub 路径、App Group、录屏扩展名、共享编码参数）
 │   ├── session.dart            登录态（token / 用户 / baseUrl），SharedPreferences 持久化
@@ -177,3 +208,9 @@ TRTC 的 `userId` 就是后端的**数字用户 ID** ——
   其中屏幕共享要特别确认两条**只在真机上才暴露**的项：
   ① 授权/开始后在对方那边真的能看到画面；
   ② 停止共享后自己的摄像头画面恢复成实时预览而不是黑框。
+- **CI 出的 release APK 目前是 debug 签名。** 仓库里虽有 `upload-keystore.jks`，
+  但没有 `android/key.properties`，`build.gradle` 里也没配 `signingConfig`，
+  于是 Gradle 回退到 debug 签名（构建日志里会有一行 warning）。
+  侧载安装没问题，但**不能上架**，且换签名后无法覆盖安装。
+  顺带一提：签名文件本身已经提交进仓库了，建议改成用 Codemagic 的
+  加密环境变量 / 安全文件注入，并从仓库移除。
