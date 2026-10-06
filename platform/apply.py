@@ -63,6 +63,12 @@ ANDROID_PERMISSIONS = [
     ('android.permission.READ_EXTERNAL_STORAGE', '32'),
 ]
 
+# minSdk 的下限。全部依赖里要求最高的是 24：
+#   permission_handler_android / image_picker_android / shared_preferences_android
+# 都声明了 minSdk = 24；而 Flutter 3.44 自己的默认值也是 24。
+# 详见 patch_android_min_sdk() 的说明。
+MIN_SDK_FLOOR = 24
+
 
 def log(msg):
     print('  ' + msg)
@@ -172,6 +178,48 @@ def patch_android_manifest(path):
     write(path, text)
 
 
+def patch_android_min_sdk(text, is_kts):
+    """确保 minSdk 不低于依赖要求 —— 并且**绝不把它降下去**。
+
+    为什么这里是「只升不降」而不是「统一写死某个值」：
+
+      · Flutter 3.44 自己的 `flutter.minSdkVersion` 默认就是 24；
+      · permission_handler_android / image_picker_android /
+        shared_preferences_android 都声明 minSdk = 24。
+
+    所以早期这里把它写死成 23，其实是一次**降级**，会让构建停在
+    manifest 合并阶段，而且错误信息与真正的原因看起来毫无关系：
+
+        uses-sdk:minSdkVersion 23 cannot be smaller than version 24
+        declared in library [:permission_handler_android]
+
+    那反过来写死 24 行不行？也不行 —— 哪天 Flutter 把默认值提到 26，
+    写死的 24 又变成降级，同一个坑再踩一次。
+    所以正确做法是**跟随 flutter.minSdkVersion**（Flutter 会保证它不低于
+    生态要求），只在遇到更低的字面量时才抬高。
+    """
+    # 标准模板：minSdk = flutter.minSdkVersion —— 跟随 Flutter，什么都别动。
+    if re.search(r'\bminSdk(?:Version)?\s*[= ]\s*flutter\.minSdkVersion', text):
+        log('- minSdk 跟随 flutter.minSdkVersion（3.44 默认 24），满足全部依赖要求')
+        return text
+
+    pat = r'\bminSdk\s*=\s*(\d+)' if is_kts else r'\bminSdkVersion\s*=?\s*(\d+)'
+    m = re.search(pat, text)
+    if not m:
+        log('- 没找到 minSdk 声明，跳过（请自行确认不低于 %d）' % MIN_SDK_FLOOR)
+        return text
+
+    cur = int(m.group(1))
+    if cur >= MIN_SDK_FLOOR:
+        log('- minSdk 已是 %d，无需改动' % cur)
+        return text
+
+    text = text[:m.start(1)] + str(MIN_SDK_FLOOR) + text[m.end(1):]
+    log('✓ minSdk 由 %d 抬到 %d（permission_handler 等依赖要求 24）'
+        % (cur, MIN_SDK_FLOOR))
+    return text
+
+
 def patch_android_gradle(path):
     text = read(path)
     if text is None:
@@ -179,13 +227,7 @@ def patch_android_gradle(path):
         return
     is_kts = path.endswith('.kts')
 
-    # minSdk 提到 23：TRTC + permission_handler 都需要运行时权限模型
-    if is_kts:
-        text = re.sub(r'minSdk\s*=\s*flutter\.minSdkVersion', 'minSdk = 23', text)
-        text = re.sub(r'minSdkVersion\s*flutter\.minSdkVersion', 'minSdk = 23', text)
-    else:
-        text = re.sub(r'minSdkVersion\s+flutter\.minSdkVersion', 'minSdkVersion 23', text)
-        text = re.sub(r'minSdkVersion\s+\d+', 'minSdkVersion 23', text)
+    text = patch_android_min_sdk(text, is_kts)
 
     # release 开混淆 + 挂 proguard 规则
     if 'proguard-rules.pro' not in text:
