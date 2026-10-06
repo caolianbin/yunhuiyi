@@ -11,7 +11,7 @@ class AppConfig {
   const AppConfig._();
 
   /// 默认后端地址（可被登录页的「服务器设置」覆盖）
-  static const String defaultBaseUrl = 'http://192.168.1.100:5000';
+  static const String defaultBaseUrl = 'https://t.vrtvoi.com';
 
   /// SignalR Hub 路径（与后端 Program.cs 中 MapHub<MeetingHub>("/hubs/meeting") 对应）
   static const String hubPath = '/hubs/meeting';
