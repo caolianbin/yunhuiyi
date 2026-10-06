@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  主 App（Runner Target）的 entitlements。
+
+  ⚠️ App Group 必须与下面三处完全一致：
+     · 本文件
+     · BroadcastExtension/BroadcastExtension.entitlements
+     · BroadcastExtension/SampleHandler.swift 的 APPGROUP 常量
+     · Dart 侧 app/lib/core/app_config.dart 的 AppConfig.iosAppGroup
+
+  为什么要 App Group：iOS 的系统级录屏是**另一个进程**在采集屏幕，
+  主 App 和这个录屏扩展是两个沙盒，只能靠 App Group 共享内存做跨进程通信。
+  不配也能跑，但 Tencent 官方明确说明「稳定性会打折扣」。
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.example.meetingApp</string>
+	</array>
+</dict>
+</plist>

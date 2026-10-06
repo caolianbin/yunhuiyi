@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  录屏扩展（Broadcast Upload Extension Target）的 entitlements。
+
+  ⚠️ 这里的 App Group 必须和主 App 的 Runner.entitlements、
+     SampleHandler.swift 的 APPGROUP 三者一字不差。
+     少配一处，表现是：点共享后控制中心显示在录，但会议里所有人都看不到你的屏幕
+     （扩展采集到了帧，但主进程收不到）。
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.example.meetingApp</string>
+	</array>
+</dict>
+</plist>

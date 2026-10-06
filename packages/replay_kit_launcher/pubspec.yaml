@@ -1,0 +1,25 @@
+name: replay_kit_launcher
+description: >-
+  在 iOS 上触发系统级屏幕共享（弹出 RPSystemBroadcastPickerView）。
+  本项目内置 fork，原因有两个：pub.dev 上的 replay_kit_launcher 1.0.0
+  发布于 2022 年、SDK 约束是 `>=2.12.0 <3.0.0`（不支持 Dart 3，直接依赖会解析失败）；
+  另外这里补了「取不到系统按钮时降级成可见按钮」的兜底，
+  避免系统 UI 结构变化时功能整个失效。
+version: 1.0.1
+publish_to: 'none'
+
+environment:
+  sdk: ^3.0.0
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      # 只声明 iOS。Android 的系统级录屏走 MediaProjection，
+      # 由 ScreenShareService + TRTC 的 startScreenCapture 完成，不需要这个插件。
+      ios:
+        pluginClass: ReplayKitLauncherPlugin

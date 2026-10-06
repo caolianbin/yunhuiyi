@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  录屏扩展 Target 的 Info.plist（Xcode 建 Target 时会自动生成一份，直接用这份覆盖即可）。
+
+  关键项说明：
+    NSExtensionPointIdentifier = com.apple.broadcast-services-upload
+        声明这是一个「Broadcast Upload Extension」，系统「屏幕录制」列表里才会出现。
+    NSExtensionPrincipalClass = $(PRODUCT_MODULE_NAME).SampleHandler
+        指向 SampleHandler.swift 里的 SampleHandler 类。
+        注意中间的 "Handler" 不能少写（是 SampleHandler 不是 SampleBroadcastHandler）。
+    RPBroadcastProcessMode = RPBroadcastProcessModeSampleBuffer
+        表示扩展拿到的是「样本缓冲区」，也就是裸的音视频帧 —— TRTC 需要的就是这个。
+        若错选成 RPBroadcastProcessModeSampleBuffer 以外的模式，扩展会拿不到帧。
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>会议屏幕共享</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.broadcast-services-upload</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).SampleHandler</string>
+		<key>RPBroadcastProcessMode</key>
+		<string>RPBroadcastProcessModeSampleBuffer</string>
+	</dict>
+</dict>
+</plist>

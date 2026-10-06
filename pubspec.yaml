@@ -1,0 +1,63 @@
+name: meeting_app
+description: "会议系统移动端（Android / iOS）——音视频会议、语音、屏幕共享"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ---------- 网络与实时通信 ----------
+  dio: ^5.11.1
+  signalr_netcore: ^1.4.4
+
+  # ---------- 腾讯云 TRTC：音视频 + 屏幕共享（核心能力） ----------
+  # 用官方在维护的新包 tencent_rtc_sdk（trtc.io 认证发布者）。
+  # 旧的 tencent_trtc_cloud 3.1.4 在 pub.dev 上已标记 discontinued，
+  # 且其回调是「枚举 + dynamic params」形态（onEnterRoom 传裸 int、
+  # onRemoteUserEnterRoom 传裸 String、其余传 Map），极易写错；
+  # 新包是强类型命名回调，编译期就能发现用错。
+  tencent_rtc_sdk: ^13.5.2
+
+  # ---------- iOS 系统级屏幕共享的「触发按钮」 ----------
+  # TRTC 的 startScreenCaptureByReplaykit 只是让 SDK 进入"等待共享数据"状态，
+  # 它不弹任何界面；而 iOS 不允许 App 直接启动系统级录屏，必须由用户触发。
+  # 没有这个触发器，用户点了「共享屏幕」之后界面上什么都不会发生。
+  #
+  # 用本地 fork 而不是 pub.dev 上的同名包：那个包是 2022 年的，
+  # SDK 约束 `>=2.12.0 <3.0.0`，在 Dart 3 上直接解析失败。
+  # 源码与说明见 packages/replay_kit_launcher/。
+  replay_kit_launcher:
+    path: packages/replay_kit_launcher
+
+  # ---------- 状态管理 ----------
+  provider: ^6.1.5+1
+
+  # ---------- 本地存储（token / 用户信息 / 偏好） ----------
+  shared_preferences: ^2.5.6
+
+  # ---------- 权限（相机 / 麦克风 / 相册） ----------
+  permission_handler: ^13.0.2
+
+  # ---------- 媒体与文件（头像、聊天发文件） ----------
+  image_picker: ^1.2.4
+  file_picker: ^13.1.0
+  path_provider: ^2.1.6
+  # ⚠️ 不要升到 4.x：cached_network_image 4.x 依赖 material_ui ^1.3.0，
+  #    而 material_ui >=1.4.0 要求 Dart SDK >=3.13.0；本工程 SDK 是 3.12.2，
+  #    升到 4.x 会直接让 `pub get` 版本求解失败。
+  cached_network_image: ^3.4.1
+
+  # ---------- 其它 ----------
+  intl: ^0.20.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

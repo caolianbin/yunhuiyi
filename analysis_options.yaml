@@ -1,0 +1,15 @@
+# 静态检查规则。
+#
+# flutter_lints 是 Flutter 官方推荐的规则集，`flutter create` 生成的工程默认就是这一份。
+# 本工程因为要迁就本机的工具链限制（flutter CLI 跑不起来），是手写的，
+# 所以这个文件也手工补上——没有它，analyzer 只会报编译错误，
+# 不会检查「未使用的 import / 未 await 的 Future / 拼写错误」这类问题。
+include: package:flutter_lints/flutter_lints.yaml
+
+analyzer:
+  errors:
+    # 生产代码里出现 todo 不算错误，但保留可见性
+    todo: info
+    # 未使用的 import 必须能被发现（迁移 SDK 时最容易留下这种残渣）
+    unused_import: warning
+    unused_local_variable: warning
