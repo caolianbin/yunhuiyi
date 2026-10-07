@@ -39,8 +39,28 @@ dependencies:
   # ---------- 本地存储（token / 用户信息 / 偏好） ----------
   shared_preferences: ^2.5.6
 
-  # ---------- 权限（相机 / 麦克风 / 相册） ----------
-  permission_handler: ^13.0.2
+  # ---------- 权限（相机 / 麦克风 / 通知） ----------
+  # ⚠️⚠️ 不要升到 13.x，更不要单独升 permission_handler_android。
+  #
+  # 13.0.2 依赖 permission_handler_android ^14.1.0，而那个包有两个硬约束：
+  #   1) 它的 android/build.gradle.kts 写死 `compileSdk = 37`，CHANGELOG 里
+  #      明确要求调用方把 app 的 compileSdk 也设成 37（BREAKING CHANGE）；
+  #   2) 源码里用了 `Manifest.permission.ACCESS_LOCAL_NETWORK` —— 这是 API 37
+  #      才有的常量，而且用在 switch 的 case 标签上。case 标签必须是编译期
+  #      常量，所以**无法**把它降级编译到 36，只能跟着要 SDK 37。
+  #
+  # 但 CI 的 Android SDK 仓库对 API 37 只提供「次要版本」包
+  # （安装到 platforms/android-37.0），而 Flutter 3.44 自带的 AGP 9.0.1 是按
+  # android-37 去找平台的，于是必然失败，报的却是：
+  #     Could not find target with hash string 'android-37'
+  # 这条报错和你真正在改的东西毫无关系，极难排查。
+  #
+  # 12.0.3 配的是 permission_handler_android 13.0.1：compileSdk 35、
+  # minSdk 19、源码无 API 37 符号。而且两侧的
+  # permission_handler_platform_interface 都是 4.4.1，Dart 侧 API 完全一致
+  # （我们只用到 camera / microphone / notification 三种权限与
+  # openAppSettings()，12.x 全都有）。
+  permission_handler: ^12.0.0
 
   # ---------- 媒体与文件（头像、聊天发文件） ----------
   image_picker: ^1.2.4

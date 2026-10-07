@@ -61,13 +61,22 @@ workflows:
       - name: 打平台配置补丁
         script: |
           # 补 Android 的权限、录屏前台服务(foregroundServiceType=mediaProjection)、
-          # 明文 HTTP、minSdk=23、release 混淆规则；
+          # 明文 HTTP、minSdk（跟随 Flutter 默认值，只升不降）、release 混淆规则；
           # 同时把 App Group 同步进 lib/core/app_config.dart。
           # 这些东西漏了**不会报错**，只会「装上了但功能不工作」，所以必须走脚本。
           python3 platform/apply.py --no-create --org com.example
 
       - name: 获取依赖
         script: flutter pub get
+
+      - name: 预检：依赖要求的 Android SDK 版本
+        script: |
+          # 依赖若要求比本项目更高的 Android SDK，CI 的 SDK 仓库往往只提供
+          # 「次要版本」包（装到 platforms/android-N.0），而 Gradle 是按
+          # android-N 去找平台的，于是报出一句既没有包名、也没有版本线索的话：
+          #     Could not find target with hash string 'android-N'
+          # 脚本把它翻译成人话。`|| true`：预检自身永远不该成为构建失败的原因。
+          python3 platform/precheck_android_sdk.py || true
 
       - name: 静态分析
         script: |

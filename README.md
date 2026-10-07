@@ -52,6 +52,27 @@ Widget 树继续留在 `app.dart`。
 切换方式：Settings → Build configuration → 选 `codemagic.yaml`，
 再在 Start new build 时选 `android-release`。
 
+**3. 依赖的 `compileSdk` 不能超过 Flutter 自己的默认值（当前 36）。**
+一旦有依赖把 compileSdk 抬到 37，构建会报出一句既没有包名、也没有版本线索的话：
+
+```
+Could not find target with hash string 'android-37'
+```
+
+原因是 CI 的 Android SDK 仓库对 API 37 只提供「次要版本」包（安装到
+`platforms/android-37.0`），而 Gradle 是按 `android-37` 去找平台的，两边对不上。
+
+目前已知的**唯一**触发点是 `permission_handler`：13.x 依赖
+`permission_handler_android` 14.x，后者写死 `compileSdk = 37`，且源码里用了
+API 37 才有的 `Manifest.permission.ACCESS_LOCAL_NETWORK` —— 它出现在 switch 的
+`case` 标签上，而 case 标签必须是编译期常量，所以**没法**靠降编译版本绕开。
+pubspec 里已钉在 `^12.0.0`（配 `permission_handler_android` 13.0.1，compileSdk 35），
+Dart 侧 API 与 13.x 完全一致 —— **不要升**，原因都写在 pubspec 的注释里。
+
+CI 里有一道 `platform/precheck_android_sdk.py` 专门把这类问题翻译成人话
+（只提醒、不中断构建；万一以后 SDK 仓库能正常提供该平台，它也不会误伤）。
+本地也能跑：`python3 platform/precheck_android_sdk.py`。
+
 CI 里为什么还要跑 `flutter create`：`android/` 没有入库 —— 它含一个二进制
 `gradle-wrapper.jar`，没法用源码方式维护。在任意一台能跑 flutter 的机器上
 执行一次 `flutter create --platforms=android --org <你的org> .`
