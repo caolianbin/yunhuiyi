@@ -12,9 +12,10 @@
 |             | uni-app / HBuilderX                                                                      | Flutter                        |
 | ----------- | ---------------------------------------------------------------------------------------- | ------------------------------ |
 | iOS 系统级屏幕共享 | ❌ 做不到                                                                                    | ✅ 可以                           |
-| 原因          | HBuilderX 云打包**无法往 iOS 工程里插入 Broadcast Upload Extension 这个独立 Target**。没有它，系统不给跨 App 录屏权限 | 工程本身就是标准 Xcode 工程，可以手工加 Target |
+| 原因          | HBuilderX 云打包**无法往 iOS 工程里插入 Broadcast Upload Extension 这个独立 Target**。没有它，系统不给跨 App 录屏权限 | 工程本身就是标准 Xcode 工程，可以用脚本往 `project.pbxproj` 里写进这个 Target |
 
-所以下面 iOS 那一节里"手工建 Target"不是偷懒没做自动化，而是**这一步物理上只能人工操作**。
+这一步现在是**脚本化的**（`platform/ios/add_broadcast_extension.py`），
+所以纯 CI 环境（手边没有 Mac）也能出可用的 iOS 包 —— 这在 HBuilderX 下做不到。
 
 ---
 
@@ -89,19 +90,42 @@ python platform/apply.py --org com.example --app-group group.com.example.meeting
 | 17 条权限 + 3 条 `uses-feature`                                     | 相机/麦克风/蓝牙/通知/录屏前台服务；`uses-feature` 设 `required=false`，否则无摄像头的平板装不上 |
 | `android:usesCleartextTraffic="true"`                           | 后端是局域网 `http://`，Android 9+ 默认禁止明文，不加就是"连不上服务器"                    |
 | `<service ... android:foregroundServiceType="mediaProjection">` | **屏幕共享的生死线**，见第 5 节                                                |
-| `minSdk = 23`                                                   | TRTC 与 `permission_handler` 都需要运行时权限模型                             |
+| `minSdk` **只升不降**（跟随 `flutter.minSdkVersion`）                    | 见下方说明 —— 写死数字迟早变成降级                                         |
 | release 开混淆 + `proguard-rules.pro`                              | 不保留 TRTC 的反射目标，会出现"本地画面正常、远端全黑且不报错"                                |
 | `abiFilters` 只留 `armeabi-v7a` / `arm64-v8a`                     | 去掉模拟器用的 x86，包体积小一半                                                 |
+
+> **为什么 `minSdk` 只升不降**：`flutter create` 生成的模板里写的是
+> `minSdk = flutter.minSdkVersion`，Flutter 3.44 默认 24。
+> 早先这个脚本把它写死成 `23`，其实是一次**降级**，构建会停在 manifest 合并阶段，
+> 而且报错与真因看起来毫无关系：
+>
+> ```
+> uses-sdk:minSdkVersion 23 cannot be smaller than version 24
+> declared in library [:permission_handler_android]
+> ```
+>
+> 那写死 `24` 呢？也不行 —— 哪天 Flutter 把默认值提到 26，写死的 24 又变成降级，
+> 同一个坑再踩一次。所以正确做法是**跟随 `flutter.minSdkVersion`**（Flutter 会保证
+> 它不低于生态要求），只在遇到更低的字面量时才抬高。
 
 **iOS**
 
 | 项目                                           | 为什么                        |
 | -------------------------------------------- | -------------------------- |
-| `Info.plist` 补 6 条隐私描述 + `UIBackgroundModes` | 缺相机/麦克风描述不是"被拒绝"，是**直接闪退** |
+| `Info.plist` 补 7 条隐私描述 + `UIBackgroundModes` | 缺相机/麦克风描述不是"被拒绝"，是**直接闪退** |
 | `Podfile` 注入 `PERMISSION_*` 宏                | permission_handler 的 iOS 权限开关，不配的话**权限弹窗根本不出现**，见下 |
 | `Runner.entitlements`                        | App Group，跨进程通信            |
 | `Podfile` → `platform :ios, '13.0'`          | Flutter 3.44 的最低要求         |
-| `ios/BroadcastExtension/` 3 个文件              | 录屏扩展源码，等第 6 节放进 Xcode      |
+| **生成 `ios/Podfile`**（若不存在）                  | `flutter create` **不会**生成它，见 3.2 节 |
+| `ios/BroadcastExtension/` 3 个文件              | 录屏扩展源码（`SampleHandler.swift` / `Info.plist` / `.entitlements`）|
+| `Podfile` 里 `target 'BroadcastExtension'`     | 扩展要链 `TXLiteAVSDK_Professional/ReplayKitExt`，漏了就是 `import` 找不到模块 |
+
+> **上面这两条只到"源码就位"为止。** 让 Xcode 真正编译这个扩展，还差把它注册成
+> `Runner.xcodeproj` 里一个**独立 Target** —— 那是第 6 节、由
+> `platform/ios/add_broadcast_extension.py` 完成的（脚本化，纯 CI 环境也能跑）。
+> 只放源码不建 Target 的话，扩展**不会被编译**，也不会出现在系统「屏幕录制」来源列表里，
+> 症状是点「共享屏幕」什么都不发生、**日志里一个错都没有**。
+
 
 ### 3.1 权限：两块都不能少
 
@@ -151,6 +175,32 @@ python platform/apply.py --org com.example --app-group group.com.example.meeting
 
 > 权限被永久拒绝（勾了"不再询问"）时，App 会弹一条带**「去设置」**按钮的提示，
 > 点了直接跳系统权限页。没有这个入口，用户误点一次就只能卸载重装。
+
+### 3.2 `ios/Podfile` 是脚本补出来的（`flutter create` 不管）
+
+这是个很容易踩的坑：**`flutter create --platforms=ios` 不会生成 `ios/Podfile`。**
+
+不是遗漏，是有意为之 —— 在 flutter_tools 里它是个独立函数
+`setupPodfile()`（`lib/src/macos/cocoapods.dart`），只在 build / pod 相关流程里
+才被调用，模板文件放在 `packages/flutter_tools/templates/cocoapods/Podfile-ios`。
+
+后果是：如果你只跑 `flutter create` 就直接 `cd ios && pod install`，
+会得到 `[!] No Podfile found`；而更多人是**根本不用 CocoaPods 建工程**，
+于是扩展要链的 ReplayKitExt 一直没被链进去。
+
+`apply.py` 的 `ensure_podfile()` 负责把它补出来，两条路径：
+
+1. 优先从**你本机 Flutter 安装目录**读官方模板（`$FLUTTER_ROOT` → `/opt/flutter`
+   → `~/flutter`），这样内容跟随 Flutter 版本；
+2. 找不到就用内嵌兜底模板（内容取自 Flutter 3.44.9 的 `Podfile-ios`）。
+
+补完还会做两件事：把 `# platform :ios, '13.0'` 那行**原地**改成生效的
+`platform :ios, '13.0'`，以及把 `target 'BroadcastExtension'` +
+`pod 'TXLiteAVSDK_Professional/ReplayKitExt'` 真正写进文件。
+
+> 注意 `flutter create` 会**覆盖**已存在的 `ios/Podfile` 吗？不会 —— 它压根不碰。
+> 但反过来，`flutter create` 在 `ios/` 已存在时会跳过整个目录生成，
+> 所以「先 run 脚本再 run create」不会有问题，**顺序反了也不会丢**。
 
 ---
 
@@ -219,6 +269,35 @@ Dart 侧 _startShare()
 > 这一节决定"苹果端屏幕共享能不能用"。**必须全部做完**，少一步的表现各不相同，  
 > 我在每步后面标了"漏了会怎样"，方便对照排查。
 
+先把分工说清楚 —— 下面标 **[脚本]** 的都已经自动化了，你不用手点；
+标 **[人工]** 的是脚本碰不到的地方（Apple 后台、Codemagic 账号设置）。
+
+| 步骤                                  | 谁做        | 自动化在哪                                        |
+| ----------------------------------- | --------- | -------------------------------------------- |
+| 建 App Group（Apple 后台）                | **[人工]**  | 脚本碰不到开发者后台                                    |
+| 给两个 App ID 勾 App Group（Apple 后台）      | **[人工]**  | 同上                                            |
+| 建 Broadcast Upload Extension Target  | **[脚本]**  | `platform/ios/add_broadcast_extension.py`     |
+| 放 SampleHandler.swift                | **[脚本]**  | `apply.py` 从 `platform/ios/` 拷过去              |
+| 挂 App Group 能力（entitlements）         | **[脚本]**  | `apply.py` 写文件 + 建 target 时设 `CODE_SIGN_ENTITLEMENTS` |
+| 给扩展配 ReplayKitExt 依赖                 | **[脚本]**  | `apply.py` 追加到 Podfile                        |
+| 让扩展随主 App 一起打包                       | **[脚本]**  | 建 target 时加 `Embed App Extensions` 阶段         |
+| 触发共享用的本地插件                          | **[脚本]**  | `packages/replay_kit_launcher/`（已随源码提供）       |
+| 代码签名（证书 / Provisioning Profile）      | **[人工]**  | 需要 Apple 开发者账号，见 6.9                            |
+
+**脚本顺序不能颠倒**（`pod install` 必须在建 target 之后，因为 CocoaPods 只认识已存在的 target）：
+
+```bash
+flutter create --platforms=ios --org com.example --project-name meeting_app .
+flutter pub get                                              # 生成 Generated.xcconfig
+python3 platform/apply.py --no-create --org com.example       # 源码/Info.plist/Podfile
+python3 platform/ios/add_broadcast_extension.py               # 建 Xcode Target
+cd ios && pod install
+```
+
+> 顺带一个容易踩的坑：**`flutter create` 不会生成 `ios/Podfile`**。
+> 它在 flutter_tools 里是 `setupPodfile()`，只在 build / pod 相关流程中才被调用。
+> 所以 `apply.py` 会自己把 Podfile 补出来（优先用 Flutter 安装目录里的官方模板）。
+
 ### 6.1 在 Apple 开发者后台创建 App Group
 
 1. 登录 <https://developer.apple.com> → **Certificates, IDs & Profiles**
@@ -245,13 +324,38 @@ Dart 侧 _startShare()
 
 ### 6.2 加 Broadcast Upload Extension Target
 
-1. 打开 `app/ios/Runner.xcworkspace`（⚠️ 是 `.xcworkspace` 不是 `.xcodeproj`）
-2. 菜单 **File > New > Target...** → 选 **Broadcast Upload Extension**
-3. 填写：
-   - Product Name: **`BroadcastExtension`**（名字要和第 3 节 Podfile 注释里的一致）
-   - Language: **Swift**
-   - **不要**勾 "Include UI Extension"
-4. Finish → 弹出 "Activate scheme?" 选 **Activate**
+**用脚本**（推荐，CI 与本地都是这一条）：
+
+```bash
+python3 platform/ios/add_broadcast_extension.py
+```
+
+它会往 `ios/Runner.xcodeproj/project.pbxproj` 里写进一整套对象：target 本体、
+三个编译阶段、Debug/Release/Profile 三份构建设置、`.appex` 产物引用、
+主 App 的 `Embed App Extensions` 阶段（`dstSubfolderSpec = 13`）、
+以及主 App 对扩展的依赖。写完会**立刻自校验**，任何一项不对就不落盘。
+
+幂等：已经存在 app-extension target 时直接跳过，可以反复跑。
+
+几个关键设置（脚本会写好，列出来方便你在 Xcode 里核对）：
+
+| 设置                                 | 值                                        | 为什么                                                                          |
+| ---------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------- |
+| `PRODUCT_BUNDLE_IDENTIFIER`        | `<主 App Bundle ID>.BroadcastExtension`   | 扩展必须是主 App 的**子标识**，否则 Apple 后台建不出对应的 App ID                                  |
+| `INFOPLIST_FILE`                   | `BroadcastExtension/Info.plist`          | 指向本工程的 Info.plist（`NSExtensionPointIdentifier` 声明它是录屏上传扩展）                   |
+| `GENERATE_INFOPLIST_FILE`          | `NO`                                     | 必须。Xcode 14+ 默认 `YES`，会和自带的 Info.plist 打架，报 `Multiple commands produce`       |
+| `CODE_SIGN_ENTITLEMENTS`           | `BroadcastExtension/...entitlements`     | 里面挂着 App Group，跨进程传画面就靠它                                                       |
+| `APPLICATION_EXTENSION_API_ONLY`   | `YES`                                    | 声明只使用扩展可用的 API                                                                |
+| `SKIP_INSTALL`                     | `YES`                                    | 扩展不能单独安装                                                                      |
+| `IPHONEOS_DEPLOYMENT_TARGET`       | `13.0`                                   | 与主 App 对齐                                                                    |
+
+> **有 Mac 也想手工点的话**：打开 `app/ios/Runner.xcworkspace`（⚠️ 是
+> `.xcworkspace` 不是 `.xcodeproj`）→ **File > New > Target...** →
+> **Broadcast Upload Extension** → Product Name 填 `BroadcastExtension`、
+> Language 选 Swift、**不要**勾 "Include UI Extension" → Finish →
+> 弹 "Activate scheme?" 选 Activate。
+> 之后仍需跑一次 `apply.py` 把源码/Podfile 备好，两种做法可以共存
+> （脚本检测到 target 已存在就会跳过）。
 
 ### 6.3 替换 SampleHandler
 
@@ -376,8 +480,15 @@ static const String iosBroadcastExtension = 'BroadcastExtension';
 
 ### 6.8 验证
 
+> 排查任何问题之前，先确认这几条脚本都跑过了：
+> `apply.py` → `add_broadcast_extension.py` → `pod install`。
+> 下表里"没建 / 没配 / 没装"这类原因，绝大多数都是漏跑了其中一步。
+>
 > 注意：不需要（也不应该）再让用户自己去控制中心长按录屏按钮了 ——
 > 点 App 里的「共享屏幕」就会自动弹系统选择器。控制中心那条路是可选的备用方案。
+>
+> 代码签名没配好时（Apple 账号问题），跑 CI 的 `ios-build-check` workflow
+> 可以先确认"工程本身没问题"：它不签名，纯编译验证。
 
 1. 真机运行 App，进会议，点底部工具栏的**共享屏幕**按钮
 2. 应**自动弹出**系统选择器（`RPSystemBroadcastPickerView`）
@@ -390,13 +501,71 @@ static const String iosBroadcastExtension = 'BroadcastExtension';
 
 | 现象                        | 原因                                                          |
 | ------------------------- | ----------------------------------------------------------- |
-| 点了共享，**什么都不弹**             | 6.2 的扩展 Target 没建，或 `iosBroadcastExtension` 与 Product Name 不一致 |
+| 点了共享，**什么都不弹**             | 扩展 Target 没建（跑 `platform/ios/add_broadcast_extension.py`），或 `iosBroadcastExtension` 与 Product Name 不一致 |
 | 选择器弹出来了，但里面**一片空白**       | 同上：`iosBroadcastExtension` 写错                                  |
-| 控制中心列表里没有你的 App           | 6.6 的 Copy Files 没配                                         |
-| 有图标，点了没反应 / 立刻结束          | 6.4 App Group 没勾全；或 6.5 依赖没装                                |
-| 在录屏（顶部变红），但别人看不到          | App Group 三处不一致（6.1 第 6 步 / 6.4 / SampleHandler 的 APPGROUP） |
-| 提示"集成错误（SDK 版本号不相符合）"      | 6.5 里扩展的 SDK 版本和主 App 不一致                                   |
+| 控制中心列表里没有你的 App           | 扩展没被嵌进主 App 的 PlugIns（建 target 时会加 `Embed App Extensions` 阶段） |
+| 有图标，点了没反应 / 立刻结束          | App Group 没勾全；或扩展的 Pod 依赖没装（`pod install` 是否在 `Pods-BroadcastExtension/` 生成了配置） |
+| 在录屏（顶部变红），但别人看不到          | App Group 不一致（6.1 第 6 步的后台勾选 / 两个 entitlements / SampleHandler 的 APPGROUP） |
+| 提示"集成错误（SDK 版本号不相符合）"      | 扩展与主 App 的 TXLiteAVSDK 版本不一致（Podfile 里别写死版本号）              |
 | 别人共享我看不到                  | Dart 侧问题，不是扩展问题 —— 检查 `onUserSubStreamAvailable` 是否触发       |
+
+### 6.9 代码签名与出包（Apple 账号相关，脚本碰不到）
+
+前面 6.1–6.7 全是"工程侧"的事，都能脚本化。剩下这一段不行 ——
+它依赖 **Apple 开发者后台**，脚本和 CI 都进不去。
+
+**前提：必须是付费账号（$99/年）。**
+免费账号创建的 App ID **不支持 App Groups**，而 App Group 是 iOS 系统级屏幕共享的
+硬前提。这里省不掉。
+
+**需要准备两个 App ID、两个 Provisioning Profile**：
+
+| 对象                   | Bundle ID                                    |
+| -------------------- | -------------------------------------------- |
+| 主 App                | `com.example.meetingApp`                     |
+| 录屏扩展                | `com.example.meetingApp.BroadcastExtension`  |
+
+扩展的 Bundle ID **必须是主 App 的子标识**（前缀一致），且两者都要勾上同一个 App Group。
+扩展的 App ID 在你第一次建 Target（6.2）之后才会出现在后台列表里。
+
+**在 Codemagic 上出包**
+
+仓库里的 `codemagic.yaml` 有 3 个 workflow，按需要选：
+
+| Workflow           | 要账号吗     | 干什么                                        |
+| ------------------ | -------- | ------------------------------------------ |
+| `android-release`  | 否        | 出 Android APK                                |
+| `ios-build-check`  | **否**    | 只编译、不签名 —— 用来把"工程问题"和"签名问题"分开       |
+| `ios-release`      | **是**    | 出 iOS IPA                                   |
+
+`ios-release` 里的签名配置就两块：
+
+```yaml
+environment:
+  ios_signing:
+    distribution_type: ad_hoc
+    bundle_identifier: com.example.meetingApp      # 只写主 App！
+```
+
+> `bundle_identifier` **只写主 App 就行** —— Codemagic 会自动连带把
+> `com.example.meetingApp.*` 的扩展 profile 也准备好。
+> 两条要**同时给**，只给一条不生效。
+
+```yaml
+- name: 应用代码签名
+  script: xcode-project use-profiles --archive-method=ad-hoc
+```
+
+> `--archive-method` 限定了只用符合该分发方式的 profile。不加的话，
+> 主 App 与扩展有可能被配上**不同用途**的 profile，典型现象是
+> archive 成功了，导出 IPA 时才报 `no profiles found` —— 因为报错点和错因隔了好几屏。
+> 生成的 export options 默认落在 `$HOME/export_options.plist`，下一步直接引用即可。
+
+上传证书那步 Codemagic 会**自动**完成 keychain 初始化，不需要自己写脚本。
+
+> **推荐流程**：先在 `ios-build-check` 上跑绿（这一步不需要账号，
+> 能证明工程和代码没问题），再去配 `ios-release` 的签名。
+> 反过来做的话，签名报错会把第一类问题完全遮住。
 
 ---
 
@@ -489,6 +658,8 @@ SignalR 重连是**新连接**，组关系会丢。代码在 `onreconnected` 里
 
 ### 9.0 前置
 
+**通用**
+
 1. 后端跑起来，两台手机和电脑在**同一个 WiFi**
 2. 两台手机都装好 App，登录不同账号
 3. **首次进会议时系统会弹「摄像头」「麦克风」权限框 → 两个都要点允许**
@@ -499,6 +670,24 @@ SignalR 重连是**新连接**，组关系会丢。代码在 `onreconnected` 里
 
 4. 手机 A 建会议，手机 B 用会议号加入
 5. 双方确认页面上方显示的是**电脑的局域网 IP**（不是 `127.0.0.1`）
+
+**Android 侧**
+
+见第 3 节：跑一次 `apply.py` 把权限、前台服务、明文 HTTP 都打上，
+然后 `flutter run`（或装 release APK）。不需要任何签名配置。
+
+**iOS 侧（首次跑必须先做完这几步，否则屏幕共享一定不工作）**
+
+1. 跑完第 6 节的三条脚本命令（`apply.py` → `add_broadcast_extension.py` →
+   `pod install`）。**漏掉第二条就没有扩展 Target**，症状是点「共享屏幕」
+   什么都不发生、**日志里一个错都没有** —— 这是最难查的一类。
+2. 确认 `AppConfig.iosAppGroup` 与你 Apple 开发者后台里创建的 App Group
+   **完全一致**，且主 App 与 BroadcastExtension 的 `.entitlements` 都挂上了它。
+3. 用真机（**不能是模拟器**）跑。模拟器没有 Broadcast Upload Extension。
+
+> **出包失败先分清是哪一类**：工程/代码问题用 `ios-build-check`（不签名）暴露，
+> 签名/账号问题才看 `ios-release`。细节和原因见 **6.9 节**。
+
 
 ### 9.1 视频（必测）
 

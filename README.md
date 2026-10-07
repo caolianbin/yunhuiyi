@@ -35,8 +35,19 @@ flutter run
 
 ## 用 Codemagic 出包（CI）
 
-仓库根目录的 `codemagic.yaml` 跑 `android-release` 这个 workflow。有两条约束，
-踩中了都会以**看起来完全无关**的错误收场：
+仓库根目录的 `codemagic.yaml` 里有**三个** workflow，按需要选：
+
+| Workflow          | 要 Apple 账号 | 产物            |
+| ----------------- | --------- | ------------- |
+| `android-release` | 否         | Android APK   |
+| `ios-build-check` | **否**     | 无（只编译，不签名）    |
+| `ios-release`     | **是**     | iOS IPA       |
+
+关于 iOS 为什么拆成两个：出包失败分"工程/代码问题"和"签名/账号问题"两类，
+后者会把前者完全遮住。`ios-build-check` 不需要任何证书，能把第一类单独暴露出来，
+先用它跑绿再去配签名，能省掉大量来回。
+
+`android-release` 有两条约束，踩中了都会以**看起来完全无关**的错误收场：
 
 **1. `lib/main.dart` 这个文件名不能改。**
 `flutter build` / `flutter run` 在不传 `--target` 时默认就找它。入口若只存在于
@@ -73,14 +84,19 @@ CI 里有一道 `platform/precheck_android_sdk.py` 专门把这类问题翻译�
 （只提醒、不中断构建；万一以后 SDK 仓库能正常提供该平台，它也不会误伤）。
 本地也能跑：`python3 platform/precheck_android_sdk.py`。
 
-CI 里为什么还要跑 `flutter create`：`android/` 没有入库 —— 它含一个二进制
-`gradle-wrapper.jar`，没法用源码方式维护。在任意一台能跑 flutter 的机器上
-执行一次 `flutter create --platforms=android --org <你的org> .`
-并把 `android/` 提交进仓库，就可以把那一步从 yaml 里删掉，后续构建更快也更可控。
+CI 里为什么还要跑 `flutter create`：`android/` 与 `ios/` 都**没有入库** ——
+它们含二进制（`gradle-wrapper.jar` / `Runner.xcodeproj` 的产物），
+没法用源码方式维护。在任意一台能跑 flutter 的机器上执行一次
+`flutter create --platforms=android,ios --org <你的org> .` 并把两个目录提交进仓库，
+就可以把那一步从 yaml 里删掉，后续构建更快也更可控。
 
-> iOS 目前**故意**没有 CI 工作流。它还缺 Broadcast Upload Extension Target
-> 与代码签名，这两件在 CI 里都做不到；提前加上只会出一个"能装但屏幕共享没用"的包，
-> 反而掩盖真正的问题。步骤见 [platform/README.md](platform/README.md) 第 6 节。
+> **iOS 的工作流已经补齐**（`ios-build-check` / `ios-release`），
+> 包括此前被认为"物理上只能人工在 Xcode 里点"的 Broadcast Upload Extension
+> Target —— 现在由 `platform/ios/add_broadcast_extension.py` 直接写进
+> `project.pbxproj`，纯 CI 环境也能建出来。
+>
+> 但**代码签名仍然只能人工**：App Group 需要付费 Apple 账号，后台勾选脚本碰不到。
+> 完整步骤（含签名与 Codemagic 配置）见 [platform/README.md](platform/README.md) 第 6 节。
 
 ---
 
@@ -114,6 +130,15 @@ lib/
 
 packages/
 └── replay_kit_launcher/        iOS 系统级屏幕共享的「触发按钮」（本地 fork，原因见其 README）
+
+platform/                       平台工程生成与打补丁（详见其 README.md）
+├── apply.py                    一键打 Android/iOS 配置补丁（含自动补 ios/Podfile）
+├── precheck_android_sdk.py     把 compileSdk 平台缺失翻译成人话
+├── android/                    ScreenShareService.kt 等注入 android/ 的源码
+└── ios/
+    ├── BroadcastExtension/     录屏扩展源码（SampleHandler.swift 等 3 个文件）
+    └── add_broadcast_extension.py
+                                  往 Runner.xcodeproj 里写进扩展 Target（纯标准库）
 ```
 
 ### 屏幕共享的"开始"为什么不是点了就算

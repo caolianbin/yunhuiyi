@@ -380,6 +380,87 @@ def plist_add(path, entries):
     log('✓ Info.plist 已补 %d 项' % len(added))
 
 
+#: Flutter 3.44 的 ios Podfile 模板。
+#:
+#: 为什么要内嵌一份：`flutter create --platforms=ios` **不会**生成 Podfile ——
+#: 它在 flutter_tools 里叫 setupPodfile()，只在 build / pod 相关流程中才被调用。
+#: 而我们要往 Podfile 里追加录屏扩展 target，所以必须先把它准备好。
+#: 这份内容取自 packages/flutter_tools/templates/cocoapods/Podfile-ios（3.44.9）。
+PODFILE_TEMPLATE = '''# Uncomment this line to define a global platform for your project
+# platform :ios, '13.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+  end
+end
+'''
+
+
+def ensure_podfile(ios_dir):
+    """确保 ios/Podfile 存在，返回它的路径。
+
+    优先用 Flutter 安装目录里自带的那份模板（这样能跟随 Flutter 版本），
+    找不到时用内嵌的兜底 —— CI 上装的是固定版本的 Flutter，两者等价。
+    """
+    podfile = os.path.join(ios_dir, 'Podfile')
+    if os.path.isfile(podfile):
+        return podfile
+
+    template = None
+    for root in (os.environ.get('FLUTTER_ROOT'), '/opt/flutter', os.path.expanduser('~/flutter')):
+        if not root:
+            continue
+        candidate = os.path.join(root, 'packages', 'flutter_tools',
+                                 'templates', 'cocoapods', 'Podfile-ios')
+        t = read(candidate)
+        if t:
+            template = t
+            log('✓ ios/Podfile 不存在，已从 %s 生成' % candidate)
+            break
+    if template is None:
+        template = PODFILE_TEMPLATE
+        log('✓ ios/Podfile 不存在，已用内嵌模板生成（Flutter 3.44 版）')
+
+    write(podfile, template)
+    return podfile
+
+
 def apply_ios():
     print('\n[iOS]')
     ios_dir = os.path.join(APP_DIR, 'ios')
@@ -418,41 +499,50 @@ def apply_ios():
               t.replace('group.com.example.meetingApp', APP_GROUP))
     log('✓ ios/BroadcastExtension/（3 个文件）')
 
-    # Podfile
-    podfile = os.path.join(ios_dir, 'Podfile')
+    # Podfile（flutter create 不会生成它，见 ensure_podfile 的说明）
+    podfile = ensure_podfile(ios_dir)
     text = read(podfile)
     if text is not None:
         # Flutter 3.44 已经把最低 iOS 版本提到 13.0，低于这个值 pod install 会报错。
         # 系统级屏幕共享本身只要 iOS 11+，跟着 Flutter 走 13.0 即可。
-        if re.search(r"^\s*platform :ios", text, re.M):
-            text = re.sub(r"^\s*platform :ios.*$", "platform :ios, '13.0'", text,
-                          count=1, flags=re.M)
+        #
+        # 注意模板里那行是**被注释掉的**（`# platform :ios, '13.0'`），
+        # 所以要连注释形式一起匹配、原地替换 —— 否则会在开头另插一行，
+        # 变成"生效的一行 + 注释的一行"，虽然能跑但很迷惑。
+        m = re.search(r"^#?\s*platform :ios.*$", text, re.M)
+        if m:
+            text = text[:m.start()] + "platform :ios, '13.0'" + text[m.end():]
         else:
             text = "platform :ios, '13.0'\n" + text
-        if 'ReplayKitExt' not in text:
+        if 'TXLiteAVSDK_Professional/ReplayKitExt' not in text:
+            # 直接写**生效**的配置，不再给注释模板。
+            # 扩展 target 由 platform/ios/add_broadcast_extension.py 自动创建，
+            # 所以不需要再让人手工去 Xcode 里点。两步的顺序不能颠倒：
+            #     1) add_broadcast_extension.py（先有 target）
+            #     2) pod install（CocoaPods 只认识已存在的 target）
+            # CI 里就是这么排的。
             text = text.rstrip() + '''
 
 # ============================================================================
 #  录屏扩展 Target 的依赖（TRTC 系统级屏幕共享必需）
 #
-#  ⚠️ 这一段**本身不会生效** —— CocoaPods 只认识「已存在的 target」，
-#     必须先在 Xcode 里 File > New > Target... 建好 Broadcast Upload Extension，
-#     target 名字叫 BroadcastExtension，再把下面的注释打开。
-#     详见 platform/README.md 的 iOS 章节。
-#
-#  target 'BroadcastExtension' do
-#    inherit! :search_paths
-#    # iOS 原生 SDK 的依赖链是：
-#    #   tencent_rtc_sdk  →  super_player/professional  →  TXLiteAVSDK_Professional
-#    # 所以这里直接引用 TXLiteAVSDK_Professional 的 ReplayKitExt 子规格即可。
-#    #
-#    # ⚠️ 不要写死版本号：同一个 Podfile 内 CocoaPods 会把同名 pod 的子规格
-#    #    统一解析到同一个版本，主 App 与扩展自然一致。一旦写死，日后主 App
-#    #    侧升级就会产生版本错配，扩展启动时报 TXReplayKitExtReason.versionMismatch，
-#    #    典型现象是「点了开始共享，屏幕顶部变红但会议里谁都没看到画面」。
-#    pod 'TXLiteAVSDK_Professional/ReplayKitExt'
-#  end
+#  对应的 Xcode target 由 platform/ios/add_broadcast_extension.py 自动创建。
+#  漏了这段的后果：扩展里 `import TXLiteAVSDK_ReplayKitExt` 找不到模块，
+#  编译期直接失败（这类报错还算清楚，不属于难查的那一类）。
 # ============================================================================
+target 'BroadcastExtension' do
+  inherit! :search_paths
+
+  # iOS 原生 SDK 的依赖链是：
+  #   tencent_rtc_sdk  →  super_player/professional  →  TXLiteAVSDK_Professional
+  # 所以这里直接引用 TXLiteAVSDK_Professional 的 ReplayKitExt 子规格即可。
+  #
+  # ⚠️ 不要写死版本号：同一个 Podfile 内 CocoaPods 会把同名 pod 的子规格
+  #    统一解析到同一个版本，主 App 与扩展自然一致。一旦写死，日后主 App
+  #    侧升级就会产生版本错配，扩展启动时报 TXReplayKitExtReason.versionMismatch，
+  #    典型现象是「点了开始共享，屏幕顶部变红但会议里谁都没看到画面」。
+  pod 'TXLiteAVSDK_Professional/ReplayKitExt'
+end
 '''
         # permission_handler：iOS 侧每个权限都由一个 PERMISSION_* 宏守卫。
         # 不开对应宏，Dart 的 Permission.camera.request() 会**静默失效**
@@ -501,7 +591,7 @@ def apply_ios():
                     '权限宏未注入 —— 请按 platform/README.md 第 6.0 节手工添加')
 
         write(podfile, text)
-        log("✓ Podfile 已就绪（platform :ios, '13.0' + 权限宏 + 录屏扩展 target 模板）")
+        log("✓ Podfile 已就绪（platform :ios, '13.0' + 权限宏 + 录屏扩展 target 配置）")
     else:
         log('!! 找不到 ios/Podfile')
 
@@ -590,20 +680,28 @@ def main():
     apply_ios()
 
     print('\n' + '=' * 70)
-    print(' 完成。接下来必须手工做的两件事：')
+    print(' 完成。后续步骤：')
     print('=' * 70)
     print('''
  1) Android：直接构建即可
-      flutter build apk --debug
+      flutter build apk --release
 
- 2) iOS：**必须手工在 Xcode 里加录屏扩展 Target**（无法脚本化）
-      这是本项目从 uni-app 换到 Flutter 的原因，也是苹果端屏幕共享的关键。
-      完整步骤见：platform/README.md
+ 2) iOS：**还要再跑一步** —— 在 Xcode 工程里建出录屏扩展 Target
+      python3 platform/ios/add_broadcast_extension.py
+      cd ios && pod install
+      flutter build ipa --release
 
-      ⚠️ 扩展 Target 的 Product Name 必须是 BroadcastExtension，
-         它要与 app/lib/core/app_config.dart 里的 iosBroadcastExtension 一致，
-         否则系统那个录屏选择器里会一片空白。
+    iOS 的系统级屏幕共享（能录到别的 App）必须由一个**独立的 Broadcast
+    Upload Extension 进程**采集屏幕，再通过 App Group 把画面交给主 App。
+    这个扩展必须以独立 Target 的形式存在于 Runner.xcodeproj 里，光有
+    SampleHandler.swift 源码是不会被编译的。
+
+    本脚本只负责把源码、Info.plist、entitlements、Podfile 准备好；
+    建 Target 是 add_broadcast_extension.py 的活（顺序不能颠倒，
+    因为 CocoaPods 只认识「已存在的 target」）。
 ''')
+    if not os.path.isdir(os.path.join(APP_DIR, 'ios')):
+        print('    ⚠️ 当前还没有 ios/ 目录 —— 上面的 iOS 步骤要先 flutter create 生成工程。')
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 # ============================================================================
-#  Codemagic 构建配置 —— Android Release APK
+#  Codemagic 构建配置 —— Android APK + iOS IPA
 #
 #  ⚠️⚠️ 本文件必须被 Codemagic「显式选用」才会生效 ⚠️⚠️
 #
@@ -9,19 +9,33 @@
 #  只有 flutter pub get / flutter build 两条 = 用的还是 UI 配置。
 #
 #  切换方式：Codemagic → 该应用 → Settings → Build configuration，
-#  把配置来源从 UI 改成 "codemagic.yaml"，
-#  然后在 Start new build 时选 android-release 这个 workflow。
+#  把配置来源从 UI 改成 "codemagic.yaml"，然后 Start new build 时选 workflow。
+#
+#  ── 三个 workflow 怎么选 ─────────────────────────────────────────────
+#    android-release  出 APK。不需要任何账号。
+#    ios-build-check  **不需要 Apple 账号**。只验证 iOS 工程能不能编译通过
+#                     （Dart / Swift / Pod / 录屏扩展 Target 是否都成立）。
+#                     第一次碰 iOS 建议先跑这个，把代码问题与账号问题分开。
+#    ios-release      出可安装的 IPA。**需要 Apple 开发者账号**（付费，$99/年）
+#                     并在 Codemagic 里配好签名文件 —— 见文件末尾的说明。
 #
 #  ── 为什么必须在 CI 里跑 flutter create ──────────────────────────────
-#  android/ 目录没有入库：它里面有个二进制文件 gradle-wrapper.jar，
-#  没法用源码方式维护，只能由 flutter create 生成。
+#  android/ 与 ios/ 都没有入库：
+#    · android/ 含二进制文件 gradle-wrapper.jar，没法用源码方式维护；
+#    · ios/ 含一大堆 Xcode 工程文件与资源，且必须与当前 Flutter 版本一致。
 #  在任意一台能跑 flutter 的机器上执行一次
-#      flutter create --platforms=android --org <你的org> .
-#  再把这个 android/ 提交进仓库，就可以删掉「生成 Android 平台工程」这一步，
+#      flutter create --platforms=android,ios --org <你的org> .
+#  再把这两个目录提交进仓库，就可以删掉「生成平台工程」这一步，
 #  后续构建更快也更可控（正式开发时推荐这么做）。
+#  注意：ios/ 一旦入库，BroadcastExtension 那个 Target 也就跟着进仓库了，
+#  不必每次都由脚本重建。
 # ============================================================================
 
 workflows:
+
+  # --------------------------------------------------------------------------
+  #  Android
+  # --------------------------------------------------------------------------
   android-release:
     name: Android Release APK
     max_build_duration: 60
@@ -93,16 +107,180 @@ workflows:
       - build/app/outputs/flutter-apk/*.apk
       - build/app/outputs/apk/**/*.apk
 
-# ============================================================================
-#  iOS 暂时没有工作流，这是**故意**的，不是遗漏。
-#
-#  iOS 端屏幕共享要真正跑通，还差两件在 CI 里做不到的事：
-#    1. Broadcast Upload Extension 这个 Target 必须存在于 Runner.xcodeproj 里，
-#       它要在 Xcode 里 File > New > Target 手工创建（或写脚本改 project.pbxproj）。
-#       缺了它，iOS 上点「共享屏幕」是**静默无效**的 —— 不报错、没反应。
-#    2. 代码签名：需要 Apple 开发者账号的证书与 Provisioning Profile，
-#       并在开发者后台给主 App 和扩展两个 App ID 都勾上同一个 App Group。
-#
-#  在 1、2 完成之前加 iOS 工作流，只会得到一个「能装上、但屏幕共享没用」的包，
-#  反而掩盖问题。详细步骤见 platform/README.md 第 6 节。
-# ============================================================================
+  # --------------------------------------------------------------------------
+  #  iOS —— 只验证能不能编译（不需要 Apple 账号）
+  #
+  #  为什么值得单独有这么一个 workflow：iOS 出包失败的原因分成两类，
+  #  一类是我们自己的代码/工程问题，另一类是签名/账号问题。混在一起时，
+  #  后面那类会把前面那类完全遮住。这个 workflow 只跑「编译」，
+  #  不需要任何证书，能把第一类问题单独暴露出来。
+  # --------------------------------------------------------------------------
+  ios-build-check:
+    name: iOS 编译验证（无需签名）
+    max_build_duration: 60
+
+    environment:
+      flutter: 3.44.9
+      xcode: latest
+      cocoapods: default
+
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/Library/Caches/CocoaPods
+        - $HOME/Library/Developer/Xcode/DerivedData
+
+    scripts:
+      - name: 生成 iOS 平台工程
+        script: |
+          # 注意：flutter create **不会**生成 ios/Podfile ——
+          # 它在 flutter_tools 里是 setupPodfile()，只在 build/pod 流程里才被调用。
+          # 所以下一步打补丁时由 apply.py 负责把它补出来。
+          flutter create --platforms=ios --org com.example --project-name meeting_app .
+
+      - name: 确认 flutter create 没有破坏工程
+        script: |
+          if ! grep -q "tencent_rtc_sdk" pubspec.yaml; then
+            echo "!! pubspec.yaml 被 flutter create 覆盖了，构建终止"; exit 1
+          fi
+          if [ ! -f lib/main.dart ]; then
+            echo "!! lib/main.dart 缺失（构建入口），构建终止"; exit 1
+          fi
+          echo "工程完整性检查通过"
+
+      - name: 获取依赖
+        script: |
+          # 必须早于 apply.py：Podfile 里的 flutter_root 函数要读
+          # ios/Flutter/Generated.xcconfig，那个文件是 pub get 生成的。
+          flutter pub get
+
+      - name: 打平台配置补丁
+        script: |
+          # 补 Info.plist 的权限描述、Runner/扩展的 entitlements（App Group）、
+          # 扩展源码、Podfile（含 platform 版本、permission_handler 的权限宏、
+          # 录屏扩展 target 的依赖），并同步 App Group 到 Dart 常量。
+          python3 platform/apply.py --no-create --org com.example
+
+      - name: 创建录屏扩展 Target
+        script: |
+          # iOS 的系统级屏幕共享必须由一个**独立的 Broadcast Upload Extension
+          # 进程**采集屏幕，再通过 App Group 把画面交给主 App 推流。
+          # 这个扩展必须以独立 Target 的形式存在于 Runner.xcodeproj 里 ——
+          # 光有 SampleHandler.swift 源码是不会被编译的。
+          #
+          # 缺了它的现象极具误导性：点「共享屏幕」之后什么都不发生，日志里一个错都没有。
+          #
+          # 这一步必须在 pod install 之前：CocoaPods 只认识「已存在的 target」。
+          python3 platform/ios/add_broadcast_extension.py
+
+      - name: 静态分析
+        script: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: 安装 CocoaPods 依赖
+        script: |
+          cd ios && pod install
+          # 扩展的 ReplayKitExt 是否真装上了，这里能直接看出来
+          echo "---- 扩展的 Pods 配置 ----"
+          ls -la Pods/Target\ Support\ Files/Pods-BroadcastExtension/ 2>/dev/null \
+            || echo "!! 没找到扩展的 Pods 配置，检查 Podfile 里的 target 'BroadcastExtension'"
+
+      - name: 编译（不签名）
+        script: |
+          # --no-codesign：不需要任何证书，纯粹验证工程/代码能不能编译。
+          # 产物是未签名的 .app，装不到手机上 —— 要装机请用 ios-release。
+          flutter build ios --release --no-codesign
+
+    artifacts:
+      - build/ios/iphoneos/Runner.app
+      - /tmp/xcodebuild_logs/*.log
+
+  # --------------------------------------------------------------------------
+  #  iOS —— 出可安装的 IPA（需要 Apple 开发者账号 + 签名文件）
+  #
+  #  前置条件（缺一不可）：
+  #    1. Apple Developer Program 付费会员（$99/年）。
+  #       —— 免费账号的 App ID 不支持 App Groups，而 App Group 是 iOS
+  #          系统级屏幕共享的必需条件（主 App 与录屏扩展靠它跨进程传画面）。
+  #    2. 在 Apple 后台为两个 App ID 都勾上同一个 App Group：
+  #         com.example.meetingApp
+  #         com.example.meetingApp.BroadcastExtension
+  #    3. 在 Codemagic 的 Team settings → Code signing identities 里
+  #       上传 .p12 证书与两个 .mobileprovision（主 App 一个、扩展一个）。
+  #       只要上传了，下面的 bundle_identifier 写主 App 的即可 ——
+  #       Codemagic 会自动把 com.example.meetingApp.* 的 profile 一起找出来。
+  #
+  #  没配好这些就跑，会在构建开始时就停在签名步骤。先用 ios-build-check
+  #  确认工程本身没问题，再来配这些，排查会快很多。
+  # --------------------------------------------------------------------------
+  ios-release:
+    name: iOS Release IPA
+    max_build_duration: 60
+
+    environment:
+      flutter: 3.44.9
+      xcode: latest
+      cocoapods: default
+
+      ios_signing:
+        # 想改成别的分发方式就把这里换掉：
+        #   ad_hoc      —— 直接装到已注册 UDID 的设备上（测试用，最常用）
+        #   development —— 开发签名，同样需要注册设备
+        #   app_store   —— 上架 / TestFlight（不需要注册设备）
+        distribution_type: ad_hoc
+        bundle_identifier: com.example.meetingApp
+
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/Library/Caches/CocoaPods
+        - $HOME/Library/Developer/Xcode/DerivedData
+
+    scripts:
+      - name: 生成 iOS 平台工程
+        script: flutter create --platforms=ios --org com.example --project-name meeting_app .
+
+      - name: 确认 flutter create 没有破坏工程
+        script: |
+          if ! grep -q "tencent_rtc_sdk" pubspec.yaml; then
+            echo "!! pubspec.yaml 被 flutter create 覆盖了，构建终止"; exit 1
+          fi
+          if [ ! -f lib/main.dart ]; then
+            echo "!! lib/main.dart 缺失（构建入口），构建终止"; exit 1
+          fi
+          echo "工程完整性检查通过"
+
+      - name: 获取依赖
+        script: flutter pub get
+
+      - name: 打平台配置补丁
+        script: python3 platform/apply.py --no-create --org com.example
+
+      - name: 创建录屏扩展 Target
+        script: python3 platform/ios/add_broadcast_extension.py
+
+      - name: 静态分析
+        script: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: 安装 CocoaPods 依赖
+        script: |
+          cd ios && pod install
+          ls -la Pods/Target\ Support\ Files/Pods-BroadcastExtension/ 2>/dev/null \
+            || echo "!! 没找到扩展的 Pods 配置"
+
+      - name: 应用代码签名
+        script: |
+          # --archive-method 限定只用符合该分发方式的 profile。
+          # 不加的话，主 App 与扩展有可能被配上不同用途的 profile，
+          # 典型现象是 archive 成功但导出 IPA 时报 "no profiles found"。
+          xcode-project use-profiles --archive-method=ad-hoc
+
+      - name: 构建 IPA
+        script: |
+          # export options 由上一步的 xcode-project use-profiles 生成，
+          # 默认就落在 $HOME/export_options.plist。
+          flutter build ipa --release --export-options-plist=$HOME/export_options.plist
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/archive/*.xcarchive
+      - /tmp/xcodebuild_logs/*.log
